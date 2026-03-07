@@ -86,9 +86,23 @@ def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit
         logger.info("Dry-run mode — stopping before analysis.")
         return
 
+    # Deduplicate by scrip_cd — BSE sometimes files the same transcript twice
+    seen_scrips: set[str] = set()
+    deduped = []
+    for item in downloaded:
+        sc = item["scrip_cd"]
+        if sc not in seen_scrips:
+            seen_scrips.add(sc)
+            deduped.append(item)
+        else:
+            logger.info(f"Duplicate filing for {item['company']} ({sc}) — skipping")
+    if len(deduped) < len(downloaded):
+        logger.info(f"Deduplicated {len(downloaded) - len(deduped)} duplicate filing(s).")
+    downloaded = deduped
+
     # ── Step 3: Extract text + Analyse ───────────────────────────
     from pdf_extractor import extract_text
-    from analyser      import analyse_transcript
+    from analyser      import analyse_transcript, is_transcript_content
 
     analyses = []
     failed   = []
@@ -101,6 +115,10 @@ def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit
         if not text:
             logger.warning(f"No text from {company}, skipping analysis.")
             failed.append(company)
+            continue
+
+        if not is_transcript_content(company, text):
+            logger.info(f"Skipping {company} — zeroth-pass: not a transcript")
             continue
 
         analysis = analyse_transcript(company, text)

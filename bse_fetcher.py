@@ -186,7 +186,7 @@ def fetch_announcement_list(from_date: str = None, to_date: str = None) -> list[
         browser.close()
 
     logger.info(f"Total announcements returned: {len(all_anns)}")
-    filtered = [a for a in all_anns if _is_bse500(a) and _is_transcript(a)]
+    filtered = [a for a in all_anns if _is_transcript(a) and _is_bse500(a)]
     logger.info(f"BSE500 transcript filings found: {len(filtered)}")
     return filtered
 
@@ -282,8 +282,9 @@ def download_transcripts(announcements: list[dict]) -> list[dict]:
             "filepath": str(filepath),
         })
 
+    newly_saved = len(results) - skipped
     logger.info(
-        f"Download complete — {len(results)} saved, {skipped} already existed, "
-        f"{len(announcements) - len(results) - skipped} failed."
+        f"Download complete — {newly_saved} newly saved, {skipped} already existed, "
+        f"{len(announcements) - len(results)} failed."
     )
     return results

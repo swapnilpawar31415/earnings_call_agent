@@ -10,7 +10,8 @@ from config import ANTHROPIC_API_KEY
 logger = logging.getLogger(__name__)
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-MODEL  = "claude-sonnet-4-20250514"
+MODEL       = "claude-sonnet-4-20250514"
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 # ─── Standard question set ────────────────────────────────────────────────────
 STANDARD_QUESTIONS = """
@@ -67,6 +68,38 @@ def _call_claude(system_prompt: str, user_prompt: str) -> str:
     except Exception as e:
         logger.error(f"Claude API call failed: {e}")
         return f"[Analysis failed: {e}]"
+
+
+def is_transcript_content(company: str, text_sample: str) -> bool:
+    """
+    Zeroth-pass check: use Haiku to confirm the document is an actual
+    earnings call / concall transcript, not a participants list, intimation,
+    or other regulatory filing.
+    Returns True if the document contains real transcript content.
+    """
+    try:
+        msg = client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=10,
+            system=(
+                "You are a document classifier. Reply with only YES or NO."
+            ),
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Does the following document excerpt contain an actual earnings call or "
+                    f"concall transcript with management commentary or analyst Q&A for {company}? "
+                    f"Answer YES if it has real spoken content. Answer NO if it is a participants "
+                    f"list, intimation notice, attendance record, or similar regulatory filing.\n\n"
+                    f"{text_sample[:1500]}"
+                ),
+            }],
+        )
+        answer = msg.content[0].text.strip().upper()
+        return answer.startswith("YES")
+    except Exception as e:
+        logger.warning(f"Zeroth-pass check failed for {company}: {e} — assuming transcript")
+        return True  # fail open: don't skip on API error
 
 
 def analyse_transcript(company: str, transcript_text: str) -> dict:
