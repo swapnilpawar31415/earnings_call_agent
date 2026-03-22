@@ -6,3 +6,4 @@ logs/
 transcripts/
 .DS_Store
 *.zip
+.env
