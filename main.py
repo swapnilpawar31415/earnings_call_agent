@@ -46,13 +46,14 @@ def save_analysis(analyses: list[dict], label: str = None):
     logger.info(f"Analyses saved → {save_path}")
 
 
-def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit: int = None, source: str = "nse"):
+def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit: int = None, source: str = "nse", model: str = "slm"):
     """Main pipeline."""
     logger.info("=" * 60)
     logger.info("Earnings Transcript Agent — starting run")
     if from_date or to_date:
         logger.info(f"Date range: {from_date or 'default'} → {to_date or 'today'}")
     logger.info(f"Source: {source.upper()}")
+    logger.info(f"Model:  {model.upper()}")
     logger.info("=" * 60)
 
     # ── Step 1: Fetch announcement list ──────────────────────────
@@ -112,6 +113,7 @@ def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit
     from pdf_extractor import extract_text
     from analyser      import analyse_transcript, is_transcript_content
 
+    use_slm  = (model == "slm")
     analyses = []
     failed   = []
 
@@ -125,11 +127,11 @@ def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit
             failed.append(company)
             continue
 
-        if not is_transcript_content(company, text):
+        if not is_transcript_content(company, text, use_slm=use_slm):
             logger.info(f"Skipping {company} — zeroth-pass: not a transcript")
             continue
 
-        analysis = analyse_transcript(company, text)
+        analysis = analyse_transcript(company, text, use_slm=use_slm)
         analysis["ann_date"] = item["ann_date"]
         analysis["headline"] = item["headline"]
         analyses.append(analysis)
@@ -196,5 +198,13 @@ if __name__ == "__main__":
         default="nse",
         help="Data source to use: nse (default) or bse",
     )
+    parser.add_argument(
+        "--model",
+        dest="model",
+        type=str,
+        choices=["slm", "llm"],
+        default="slm",
+        help="Model to use for analysis: slm (default) or llm (Claude)",
+    )
     args = parser.parse_args()
-    run(dry_run=args.dry_run, from_date=args.from_date, to_date=args.to_date, limit=args.limit, source=args.source)
+    run(dry_run=args.dry_run, from_date=args.from_date, to_date=args.to_date, limit=args.limit, source=args.source, model=args.model)

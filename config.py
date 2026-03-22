@@ -7,8 +7,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ─── Anthropic ────────────────────────────────────────────────────────────────
+# ─── Anthropic (LLM — used when --model llm is passed) ───────────────────────
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+
+# ─── SLM (default for transcript analysis — Together AI or local Ollama) ──────
+# Set SLM_BASE_URL in .env to activate. See .env.example for options.
+SLM_BASE_URL = os.getenv("SLM_BASE_URL", "")
+SLM_API_KEY  = os.getenv("SLM_API_KEY",  "ollama")
+SLM_MODEL    = os.getenv("SLM_MODEL",    "Qwen/Qwen2.5-7B-Instruct-Turbo")
 
 # ─── Email (Gmail SMTP) ───────────────────────────────────────────────────────
 # Use an App Password, not your main Gmail password.

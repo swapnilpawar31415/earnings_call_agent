@@ -1,17 +1,25 @@
 # analyser.py
-# Runs two-pass Claude analysis on each transcript:
+# Runs two-pass analysis on each transcript:
 #   Pass 1 — structured answers to the standard question set
 #   Pass 2 — freeform noteworthy assessment
+#
+# Default model: SLM (Qwen2.5-7B via Together AI or local Ollama)
+# Use --model llm at the CLI to switch to Claude instead.
 
 import logging
+import httpx
 import anthropic
-from config import ANTHROPIC_API_KEY
+from config import (
+    ANTHROPIC_API_KEY,
+    SLM_BASE_URL, SLM_API_KEY, SLM_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-MODEL       = "claude-sonnet-4-20250514"
+LLM_MODEL   = "claude-sonnet-4-20250514"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+_anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # ─── Standard question set ────────────────────────────────────────────────────
 STANDARD_QUESTIONS = """
@@ -55,11 +63,43 @@ Be specific. Quote short phrases from the transcript to support each observation
 Format as a numbered list. Do not pad with generic observations."""
 
 
-def _call_claude(system_prompt: str, user_prompt: str) -> str:
-    """Make a single Claude API call and return the response text."""
+# ─── SLM call (Together AI / Ollama / any OpenAI-compatible endpoint) ─────────
+
+def _call_slm(system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> str:
+    """Call the configured SLM via OpenAI-compatible /chat/completions."""
+    if not SLM_BASE_URL:
+        raise RuntimeError(
+            "SLM_BASE_URL is not set. Add it to .env or use --model llm."
+        )
     try:
-        msg = client.messages.create(
-            model=MODEL,
+        r = httpx.post(
+            f"{SLM_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {SLM_API_KEY}"},
+            json={
+                "model": SLM_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                "temperature": 0.0,
+                "max_tokens":  max_tokens,
+            },
+            timeout=120.0,
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"SLM call failed: {e}")
+        return f"[Analysis failed: {e}]"
+
+
+# ─── LLM call (Claude) ────────────────────────────────────────────────────────
+
+def _call_llm(system_prompt: str, user_prompt: str, model: str = LLM_MODEL) -> str:
+    """Call Claude via the Anthropic SDK."""
+    try:
+        msg = _anthropic_client.messages.create(
+            model=model,
             max_tokens=2000,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
@@ -70,44 +110,43 @@ def _call_claude(system_prompt: str, user_prompt: str) -> str:
         return f"[Analysis failed: {e}]"
 
 
-def is_transcript_content(company: str, text_sample: str) -> bool:
+def _call(system_prompt: str, user_prompt: str, use_slm: bool, max_tokens: int = 2000) -> str:
+    if use_slm:
+        return _call_slm(system_prompt, user_prompt, max_tokens=max_tokens)
+    return _call_llm(system_prompt, user_prompt)
+
+
+# ─── Public API ───────────────────────────────────────────────────────────────
+
+def is_transcript_content(company: str, text_sample: str, use_slm: bool = True) -> bool:
     """
-    Zeroth-pass check: use Haiku to confirm the document is an actual
-    earnings call / concall transcript, not a participants list, intimation,
-    or other regulatory filing.
+    Zeroth-pass check: confirm the document is an actual earnings call transcript,
+    not a participants list, intimation, or other regulatory filing.
     Returns True if the document contains real transcript content.
     """
+    system = "You are a document classifier. Reply with only YES or NO."
+    user   = (
+        f"Does the following document excerpt contain an actual earnings call or "
+        f"concall transcript with management commentary or analyst Q&A for {company}? "
+        f"Answer YES if it has real spoken content. Answer NO if it is a participants "
+        f"list, intimation notice, attendance record, or similar regulatory filing.\n\n"
+        f"{text_sample[:3000]}"
+    )
     try:
-        msg = client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=10,
-            system=(
-                "You are a document classifier. Reply with only YES or NO."
-            ),
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Does the following document excerpt contain an actual earnings call or "
-                    f"concall transcript with management commentary or analyst Q&A for {company}? "
-                    f"Answer YES if it has real spoken content. Answer NO if it is a participants "
-                    f"list, intimation notice, attendance record, or similar regulatory filing.\n\n"
-                    f"{text_sample[:1500]}"
-                ),
-            }],
-        )
-        answer = msg.content[0].text.strip().upper()
+        answer = _call(system, user, use_slm=use_slm, max_tokens=10).strip().upper()
         return answer.startswith("YES")
     except Exception as e:
         logger.warning(f"Zeroth-pass check failed for {company}: {e} — assuming transcript")
         return True  # fail open: don't skip on API error
 
 
-def analyse_transcript(company: str, transcript_text: str) -> dict:
+def analyse_transcript(company: str, transcript_text: str, use_slm: bool = True) -> dict:
     """
     Run both analysis passes on a transcript.
     Returns dict with 'standard_qa' and 'noteworthy' fields.
     """
-    logger.info(f"Analysing transcript for {company} ...")
+    model_tag = f"SLM ({SLM_MODEL})" if use_slm else f"LLM ({LLM_MODEL})"
+    logger.info(f"Analysing transcript for {company} [{model_tag}]...")
 
     # Pass 1 — Standard Q&A
     pass1_user = f"""COMPANY: {company}
@@ -120,7 +159,7 @@ Answer each of the following questions based on the transcript above:
 
 {STANDARD_QUESTIONS}"""
 
-    standard_qa = _call_claude(PASS1_SYSTEM, pass1_user)
+    standard_qa = _call(PASS1_SYSTEM, pass1_user, use_slm=use_slm)
     logger.info(f"Pass 1 complete for {company}")
 
     # Pass 2 — Freeform noteworthy observations
@@ -132,11 +171,12 @@ TRANSCRIPT:
 ---
 Provide your noteworthy analyst observations for this earnings call."""
 
-    noteworthy = _call_claude(PASS2_SYSTEM, pass2_user)
+    noteworthy = _call(PASS2_SYSTEM, pass2_user, use_slm=use_slm)
     logger.info(f"Pass 2 complete for {company}")
 
     return {
         "company":     company,
         "standard_qa": standard_qa,
         "noteworthy":  noteworthy,
+        "model":       model_tag,
     }
