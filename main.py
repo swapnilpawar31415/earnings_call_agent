@@ -3,10 +3,11 @@
 # Earnings Call Transcript Agent — Main Orchestrator
 #
 # Usage:
-#   python main.py                              # Normal run (yesterday's transcripts)
-#   python main.py --dry-run                    # Fetch & download only, no email
+#   python main.py                                # Normal run (NSE, yesterday's transcripts)
+#   python main.py --dry-run                      # Fetch & download only, no email
 #   python main.py --from 20250201 --to 20250228  # Date range (results season backfill)
-#   python main.py --from 20250305              # Single date (--to defaults to today)
+#   python main.py --from 20250305                # Single date (--to defaults to today)
+#   python main.py --source bse                   # Use BSE instead of NSE (default: nse)
 #
 # Schedule with cron (runs at 7am daily):
 #   0 7 * * * cd /path/to/earnings_agent && python main.py >> logs/cron.log 2>&1
@@ -45,17 +46,23 @@ def save_analysis(analyses: list[dict], label: str = None):
     logger.info(f"Analyses saved → {save_path}")
 
 
-def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit: int = None):
+def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit: int = None, source: str = "nse"):
     """Main pipeline."""
     logger.info("=" * 60)
     logger.info("Earnings Transcript Agent — starting run")
     if from_date or to_date:
         logger.info(f"Date range: {from_date or 'default'} → {to_date or 'today'}")
+    logger.info(f"Source: {source.upper()}")
     logger.info("=" * 60)
 
     # ── Step 1: Fetch announcement list ──────────────────────────
-    from bse_fetcher import fetch_announcement_list, download_transcripts
-    announcements = fetch_announcement_list(from_date=from_date, to_date=to_date)
+    if source == "bse":
+        import bse_fetcher as fetcher
+    else:
+        import nse_fetcher as fetcher
+
+    announcements = fetcher.fetch_announcement_list(from_date=from_date, to_date=to_date)
+    logger.info(f"Filings found — {source.upper()}: {len(announcements)}")
 
     if not announcements:
         logger.info("No transcript filings found for the period.")
@@ -65,28 +72,29 @@ def run(dry_run: bool = False, from_date: str = None, to_date: str = None, limit
         logger.info("Done — nothing to process.")
         return
 
-    logger.info(f"Found {len(announcements)} transcript filing(s).")
-
     if limit:
         announcements = announcements[:limit]
         logger.info(f"Limiting to first {limit} transcript(s) (--limit flag).")
 
     # ── Step 2: Download PDFs ─────────────────────────────────────
-    downloaded = download_transcripts(announcements)
+    downloaded = fetcher.download_transcripts(announcements)
     logger.info(f"Successfully downloaded: {len(downloaded)} PDF(s).")
 
     if not downloaded:
         logger.warning("All downloads failed.")
         if not dry_run:
             from emailer import send_digest
-            send_digest(analyses=[], failed=[a.get("SCRIP_NAME") or a.get("SLONGNAME") or a.get("SCRIP_CD", "Unknown") for a in announcements])
+            send_digest(analyses=[], failed=[
+                a.get("sm_name") or a.get("SCRIP_NAME") or a.get("SLONGNAME") or a.get("SCRIP_CD", "Unknown")
+                for a in announcements
+            ])
         return
 
     if dry_run:
         logger.info("Dry-run mode — stopping before analysis.")
         return
 
-    # Deduplicate by scrip_cd — BSE sometimes files the same transcript twice
+    # Deduplicate by scrip_cd — exchange sometimes files the same transcript twice
     seen_scrips: set[str] = set()
     deduped = []
     for item in downloaded:
@@ -180,5 +188,13 @@ if __name__ == "__main__":
         metavar="N",
         help="Process only the first N transcripts (useful for testing)",
     )
+    parser.add_argument(
+        "--source",
+        dest="source",
+        type=str,
+        choices=["nse", "bse"],
+        default="nse",
+        help="Data source to use: nse (default) or bse",
+    )
     args = parser.parse_args()
-    run(dry_run=args.dry_run, from_date=args.from_date, to_date=args.to_date, limit=args.limit)
+    run(dry_run=args.dry_run, from_date=args.from_date, to_date=args.to_date, limit=args.limit, source=args.source)

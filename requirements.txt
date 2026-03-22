@@ -15,6 +15,8 @@ jiter==0.13.0
 pdfminer.six==20251230
 pdfplumber==0.11.9
 pillow==12.1.1
+mthrottle==0.0.2
+nse==2.1.3
 playwright==1.58.0
 pycparser==3.0
 pydantic==2.12.5
